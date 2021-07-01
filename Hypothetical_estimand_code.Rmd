@@ -1,0 +1,1234 @@
+---
+title: "Hypothetical_estimand"
+author: "Camila Olarte Parra"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.align = "center",
+                      dev = "png",
+                      cache = TRUE)
+```
+
+
+```{r Library, include=FALSE}
+library('MASS')
+library("mice")
+library(locfit)
+library(latex2exp)
+library(rlang)
+library(devtools)
+library(ggplot2)
+library(grid)
+```
+
+## Function
+
+```{r Hypothetical estimand function, include=FALSE}
+
+hypothetical_estimand <-
+  function(seed,
+           n.sim,
+           n,
+           t,
+           A0.prob,
+           L0.mean,
+           L0.sd,
+           L.on.Lk,
+           L.squared.on.L.A.1,
+           L.squared.on.L.A.0,
+           A.on.L,
+           L.squared.on.A.1,
+           L.squared.on.A.0,
+           L.sd,
+           A.intercept,
+           L.on.A,
+           A.on.Ak,
+           probabilistic,
+           threshold,
+           L.on.Y,
+           A0.on.Y,
+           A.on.Y,
+           L.squared.on.Y.1,
+           L.squared.on.Y.0,
+           Y.sd,
+           plot.title){
+    # For reproducibility
+    set.seed(seed)
+    
+    # Vectors for estimates
+    prob.ICE <- rep(NA, n.sim)
+    naive.Y1 <- rep(NA, n.sim)
+    naive.Y0 <- rep(NA, n.sim)
+    g.single.all.Y1 <- rep(NA, n.sim)
+    g.single.all.Y0 <- rep(NA, n.sim)
+    g.single.ICE.free.Y1 <- rep(NA, n.sim)
+    g.single.ICE.free.Y0 <- rep(NA, n.sim)
+    g.separate.all.Y1 <- rep(NA, n.sim)
+    g.separate.all.Y0 <- rep(NA, n.sim)
+    g.separate.ICE.free.Y1 <- rep(NA, n.sim)
+    g.separate.ICE.free.Y0 <- rep(NA, n.sim)
+    IPW.single.all.Y1 <- rep(NA, n.sim)
+    IPW.single.all.Y0 <- rep(NA, n.sim)
+    IPW.single.ICE.free.Y1 <- rep(NA, n.sim)
+    IPW.single.ICE.free.Y0 <- rep(NA, n.sim)
+    IPW.separate.all.Y1 <- rep(NA, n.sim)
+    IPW.separate.all.Y0 <- rep(NA, n.sim)
+    IPW.separate.ICE.free.Y1 <- rep(NA, n.sim)
+    IPW.separate.ICE.free.Y0 <- rep(NA, n.sim)
+    MI.single.Y1 <- rep(NA, n.sim)
+    MI.single.Y0 <- rep(NA, n.sim)
+    MI.separate.Y1 <- rep(NA, n.sim)
+    MI.separate.Y0 <- rep(NA, n.sim)
+    
+    # Expected value ####
+    # L0 ~ N(L0.mean,L0.sd)
+    expected.l <-
+      rep(L0.mean,t)
+    
+    # if A0=1
+    # E(L_k) = L.on.Lk*(\bar{L}_{k-1}) +
+    #           A.on.L*A0 + 
+    #           A.on.L*(A1,...Ak) } 0
+    
+    i <-1
+    
+    for (i in 1:(t-1)) {
+      expected.l[i+1] <-
+        t(matrix(L.on.Lk,i))%*%expected.l[1:i]+
+        A.on.L
+    }
+    
+    # if A0=1
+    # E(L_K) = L.on.Lk*(\bar{L}_{k-1}) +
+    #           L.squared.on.L.A.1*(L0^2+L0.sd^2) +
+    #           A.on.L*A0 + 
+    #           A.on.L*(A1,...Ak) } 0
+    
+    expected.l[t] <- 
+      expected.l[t]+L.squared.on.L.A.1*(L0.mean^2+L0.sd^2)
+    
+    # E(Y^1) = L.on.Y*L_k+A0.on.Y*A0+
+    #           L.squared.on.Y.1*(L0^2+L0.sd^2)
+    true.Y1 <- 
+      t(matrix(L.on.Y,t))%*%expected.l + 
+      A0.on.Y + 
+      L.squared.on.Y.1*(L0.mean^2+L0.sd^2)
+    
+    
+    # if A0=0
+    # E(L_k) = L.on.Lk*(\bar{L}_{k-1})+
+    #           A.on.L*A0 + } 0
+    #           A.on.L*(A1,...Ak) } 0
+    expected.l <-
+      rep(L0.mean,t)
+    
+    i <-1
+    
+    for (i in 1:(t-1)) {
+      expected.l[i+1] <-
+        t(matrix(L.on.Lk,i))%*%expected.l[1:i]
+    }
+    
+    # if A0=0
+    # E(L_K) = L.on.Lk*(\bar{L}_{k-1})+
+    #           L.squared.on.L.A.0*(L0^2+L0.sd^2) +
+    #           A.on.L*A0 + } 0
+    #           A.on.L*(A1,...AK) } 0
+    
+    expected.l[t] <- 
+      expected.l[t]+L.squared.on.L.A.0*(L0.mean^2+L0.sd^2)
+    
+    # E(Y^0) = L.on.Y*L_k +
+    
+    #           A0.on.Y*A0 + } 0
+    #           L.squared.on.Y*L_k
+    true.Y0 <- 
+      t(matrix(L.on.Y,t))%*%expected.l + 
+      L.squared.on.Y.0*(L0.mean^2+L0.sd^2)
+    
+    i <- 1
+    for(i in 1:n.sim){
+      # Data generating mechanism ####
+      # Baseline and time varying covariates
+      L <- matrix(NA, nrow = n, ncol = t)
+      colnames(L) <- 
+        paste("L",0:(t-1),sep = "")
+      # Treatment and ICE
+      A <- matrix(NA, nrow = n, ncol = t)
+      colnames(A) <- 
+        paste("A",0:(t-1),sep = "")
+      
+      # A0: randomised treatment
+      A[,1] <- rbinom(n, 1, A0.prob) 
+      # L0: Baseline covariate
+      L[,1] <- rnorm(n, L0.mean, L0.sd)
+      
+      # ICE and Time-varying covariates
+      k <- 1
+      if(probabilistic == T){
+        # Probabilitic ICE 
+        for (k in 1:(t-2)) {
+          L[,k+1] <- 
+            rnorm(n = n, 
+                  mean = rowSums(L.on.Lk*as.matrix(L[,1:k])) +
+                    rowSums(A.on.L*as.matrix(A[,1:k])), 
+                  sd = L.sd)
+          A[,k+1] <-
+            rbinom(n = n, size = 1,
+                   prob = expit(A.intercept + 
+                                  rowSums(L.on.A*as.matrix(L[,1:(k+1)])) +
+                                  rowSums(A.on.Ak*as.matrix(A[,1:k]))))
+        }
+      } else {
+        # Deterministic ICE 
+        for (k in 1:(t-2)) {
+          L[,k+1] <- 
+            rnorm(n = n, 
+                  mean = rowSums(L.on.Lk*as.matrix(L[,1:k])) +
+                    rowSums(A.on.L*as.matrix(A[,1:k])), 
+                  sd = L.sd)
+          A[,k+1] <- ifelse(L[,k+1] >= threshold, 1, 0)
+        }
+      }
+      
+      # L and A at K, including L squared
+      if(probabilistic == T){
+        L[,t] <- 
+          rnorm(n = n, 
+                mean = rowSums(L.on.Lk*as.matrix(L[,1:(t-1)])) +
+                  L.squared.on.L.A.1*A[,1]*(L[,1]^2) +
+                  L.squared.on.L.A.0*(1-A[,1])*(L[,1]^2) +
+                  rowSums(A.on.L*as.matrix(A[,1:(t-1)])), 
+                sd = L.sd)
+        A[,t] <-
+          rbinom(n = n, size = 1,
+                 prob = expit(A.intercept + 
+                                rowSums(L.on.A*as.matrix(L[,1:t])) +
+                                rowSums(A.on.Ak*as.matrix(A[,1:(t-1)]))+
+                                L.squared.on.A.1*A[,1]*(L[,1]^2) +
+                                L.squared.on.A.0*(1-A[,1])*(L[,1]^2)))
+                                
+      }else {
+        L[,t] <- 
+          rnorm(n = n, 
+                mean = rowSums(L.on.Lk*as.matrix(L[,1:(t-1)])) +
+                  L.squared.on.L.A.1*A[,1]*(L[,1]^2) +
+                  L.squared.on.L.A.1*(1-A[,1])*(L[,1]^2) +
+                  rowSums(A.on.L*as.matrix(A[,1:(t-1)])), 
+                sd = L.sd)
+        A[,t] <-
+          ifelse(L[,t] >= threshold, 1, 0)
+        
+      }
+      
+      
+      # Outcome
+      Y <- 
+        rnorm(n = n, 
+              mean = rowSums(L.on.Y*(as.matrix(L))) + 
+                L.squared.on.Y.1*A[,1]*(L[,1]^2) + 
+                L.squared.on.Y.0*(1-A[,1])*(L[,1]^2) +
+                A0.on.Y*A[,1] + 
+                rowSums(A.on.Y*(as.matrix(A[,2:t]))),
+              sd = Y.sd)
+      
+      # Dataset
+      data <-
+        cbind.data.frame(A,L,Y)
+      
+      # Probablity of ICE free at the end of follow-up
+      prob.ICE[i] <- mean(rowSums(as.matrix(data[,2:t]))==0)
+      
+      # Naive ####
+      n.ICE <- rowSums(as.matrix(data[,2:t]))
+      naive.Y1[i] <- 
+        mean(data$Y[data$A0==1 & n.ICE==0])
+      naive.Y0[i] <- 
+        mean(data$Y[data$A0==0 & n.ICE==0])
+      
+      # G-formula single model for all patients ####
+      g.data <- data
+      # Setting A_{1:K} = 0 for predictions
+      g.data[,2:t] <- rep(0,(t-1))
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[,c(1:(k+1),(t+1):(t+k+1))] 
+        L.obs <- data[,(t+k+2)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.single.all.Y1[i] <- 
+        mean(g.data[g.data$A0==1,
+                    ncol(g.data)])
+      
+      g.single.all.Y0[i] <- 
+        mean(g.data[g.data$A0==0,
+                    ncol(g.data)])
+      
+      # G-formula single model among ICE free ####
+      g.data <- data
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[,c(1,(t+1):(t+k+2))] 
+        n.ICE <- rowSums(as.matrix(data[,2:(k+1)]))
+        L.data <- L.data[n.ICE==0,]
+        L.obs <- L.data[,ncol(L.data)]
+        L.data <- L.data[,-ncol(L.data)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.single.ICE.free.Y1[i] <- 
+        mean(g.data[g.data$A0==1,ncol(g.data)])
+      
+      g.single.ICE.free.Y0[i] <- 
+        mean(g.data[g.data$A0==0,ncol(g.data)])
+      
+      # G-formula separately by treatment group for all patients ####
+      # For treatment group
+      g.data <- data[data$A0==1,]
+      # Setting A_{1:K} = 0 for predictions
+      g.data[,2:t] <- rep(0,(t-1))
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[data$A0==1,c(2:(k+1),(t+1):(t+k+1))] 
+        L.obs <- data[data$A0==1,(t+k+2)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.separate.all.Y1[i] <- 
+        mean(g.data[,ncol(g.data)])
+      
+      # For control group
+      g.data <- data[data$A0==0,]
+      # Setting A_{1:K} = 0 for predictions
+      g.data[,2:t] <- rep(0,(t-1))
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[data$A0==0,c(2:(k+1),(t+1):(t+k+1))] 
+        L.obs <- data[data$A0==0,(t+k+2)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.separate.all.Y0[i] <- 
+        mean(g.data[,ncol(g.data)])
+      
+      
+      # G-formula separately by treatment group among ICE ####
+      # For treatment group
+      g.data <- data[data$A0==1,]
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[data$A0==1,(t+1):(t+k+2)]
+        n.ICE <- rowSums(as.matrix(g.data[,2:(k+1)]))
+        L.data <- L.data[n.ICE==0,]
+        L.obs <- L.data[,ncol(L.data)]
+        L.data <- L.data[,-ncol(L.data)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.separate.ICE.free.Y1[i] <- 
+        mean(g.data[,ncol(g.data)])
+      
+      # For control group
+      g.data <- data[data$A0==0,]
+      
+      k <- 1
+      for (k in 1:(t-1)){
+        # L model
+        L.data <- data[data$A0==0,(t+1):(t+k+2)]
+        n.ICE <- rowSums(as.matrix(g.data[,2:(k+1)]))
+        L.data <- L.data[n.ICE==0,]
+        L.obs <- L.data[,ncol(L.data)]
+        L.data <- L.data[,-ncol(L.data)]
+        
+        g.formula <- 
+          glm(L.obs ~ .,
+              data = L.data)
+        predict.L <- 
+          predict(g.formula,
+                  g.data)
+        g.data[,(t+k+2)] <- predict.L
+        
+      }
+      
+      g.separate.ICE.free.Y0[i] <- 
+        mean(g.data[,ncol(g.data)])
+      
+      if(probabilistic == T){
+        # IPW single model for all patients #### 
+        IPW.data <- data
+        weights <- rep(1, n)
+        k <- 1
+        for (k in 1:(t-1)){
+          # A model
+          A.data <- IPW.data[,c(1:k,(t+1):(t+k+1))]
+          A.k <- IPW.data[,(k+1)]
+          
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          
+          weights <- weights*weights.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(data[,2:t]))
+        IPW.single.all.Y1[i] <- 
+          sum(data$Y[data$A0==1 &
+                       n.ICE==0]*
+                weights[data$A0==1 &
+                          n.ICE==0])/
+          sum(weights[data$A0==1 &
+                        n.ICE==0])
+        IPW.single.all.Y0[i] <- 
+          sum(data$Y[data$A0==0 &
+                       n.ICE==0]*
+                weights[data$A0==0 &
+                          n.ICE==0])/
+          sum(weights[data$A0==0 &
+                        n.ICE==0])
+        
+        # IPW single model among ICE free #### 
+        IPW.data <- data
+        
+        # For t=1, all patients included
+        A.data <- IPW.data[,c(1,(t+1):(t+2))]
+        A.1 <- IPW.data[,2]
+        
+        PS <- 
+          glm(A.1 ~ .,
+              data = A.data,
+              family = "binomial")
+        weights <- 
+          ifelse(A.1==1, 
+                 1/PS$fitted.values,
+                 1/(1-PS$fitted.values))
+        
+        # For t>1 only patients with \bar(A)_{k-1}=0
+        ICE.indicator <- IPW.data[,2]
+        k <- 1
+        for (k in 1:(t-2)){
+          # A model
+          A.data <- IPW.data[,c(1:(k+1),(t+1):(t+k+2))]
+          A.k <- IPW.data[,(k+2)]
+          n.ICE <- rowSums(as.matrix(data[,2:(k+1)]))
+          A.data <- A.data[n.ICE==0,]
+          A.k <- A.k[n.ICE==0]
+          
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          weights <- weights[ICE.indicator==0]*weights.k
+          ICE.indicator <- A.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(data[,2:t]))
+        IPW.single.ICE.free.Y1[i] <- 
+          sum(IPW.data$Y[IPW.data$A0==1 &
+                           n.ICE==0]*
+                weights[A.data[,1]==1 & 
+                          ICE.indicator==0])/
+          sum(weights[A.data[,1]==1 &
+                        ICE.indicator==0])
+        IPW.single.ICE.free.Y0[i] <- 
+          sum(IPW.data$Y[IPW.data$A0==0 &
+                           n.ICE==0]*
+                weights[A.data[,1]==0 &
+                          ICE.indicator==0])/
+          sum(weights[A.data[,1]==0 &
+                        ICE.indicator==0])
+        
+        # IPW separately by treatment group for all patients #### 
+        # For treatment group
+        IPW.data <- data[data$A0==1,]
+        weights <- rep(1, nrow(IPW.data))
+        k <- 1
+        for (k in 1:(t-1)){
+          # A model
+          A.data <- IPW.data[,c(1:k,(t+1):(t+k+1))]
+          A.data <- A.data[,-1] # A0 not needed for separate models
+          A.k <- IPW.data[,(k+1)]
+          
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          
+          weights <- weights*weights.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(IPW.data[,2:t]))
+        IPW.separate.all.Y1[i] <- 
+          sum(IPW.data$Y[n.ICE==0]*weights[n.ICE==0])/
+          sum(weights[n.ICE==0])
+        
+        # For control group
+        IPW.data <- data[data$A0==0,]
+        weights <- rep(1, nrow(IPW.data))
+        k <- 1
+        for (k in 1:(t-1)){
+          # A model
+          A.data <- IPW.data[,c(1:k,(t+1):(t+k+1))]
+          A.data <- A.data[,-1] # A0 not needed for separate models
+          A.k <- IPW.data[,(k+1)]
+          
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          
+          weights <- weights*weights.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(IPW.data[,2:t]))
+        IPW.separate.all.Y0[i] <- 
+          sum(IPW.data$Y[n.ICE==0]*weights[n.ICE==0])/
+          sum(weights[n.ICE==0])
+        
+        # IPW separately by treatment group among ICE free #### 
+        # For treatment group
+        IPW.data <- data[data$A0==1,]
+        
+        # For t=1, all patients included
+        A.data <- IPW.data[,c((t+1):(t+2))]
+        A.1 <- IPW.data[,2]
+        
+        PS <- 
+          glm(A.1 ~ .,
+              data = A.data,
+              family = "binomial")
+        weights <- 
+          ifelse(A.1==1, 
+                 1/PS$fitted.values,
+                 1/(1-PS$fitted.values))
+        
+        # For t>1 only patients with \bar(A)_{k-1}=0
+        ICE.indicator <- A.1
+        k <- 1
+        for (k in 1:(t-2)){
+          # A model
+          A.data <- IPW.data[,c((t+1):(t+k+2))]
+          A.k <- IPW.data[,(k+2)]
+          n.ICE <- rowSums(as.matrix(IPW.data[,2:(k+1)]))
+          A.data <- A.data[n.ICE==0,]
+          A.k <- A.k[n.ICE==0]
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          weights <- weights[ICE.indicator==0]*weights.k
+          ICE.indicator <- A.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(IPW.data[,2:t]))
+        IPW.separate.ICE.free.Y1[i] <- 
+          sum(IPW.data$Y[n.ICE==0]*
+                weights[ICE.indicator==0])/
+          sum(weights[ICE.indicator==0])
+        
+        # For control group
+        IPW.data <- data[data$A0==0,]
+        
+        # For t=1, all patients included
+        A.data <- IPW.data[,c((t+1):(t+2))]
+        A.1 <- IPW.data[,2]
+        
+        PS <- 
+          glm(A.1 ~ .,
+              data = A.data,
+              family = "binomial")
+        weights <- 
+          ifelse(A.1==1, 
+                 1/PS$fitted.values,
+                 1/(1-PS$fitted.values))
+        
+        # For t>1 only patients with \bar(A)_{k-1}=0
+        ICE.indicator <- A.1
+        k <- 1
+        for (k in 1:(t-2)){
+          # A model
+          A.data <- IPW.data[,c((t+1):(t+k+2))]
+          A.k <- IPW.data[,(k+2)]
+          n.ICE <- rowSums(as.matrix(IPW.data[,2:(k+1)]))
+          A.data <- A.data[n.ICE==0,]
+          A.k <- A.k[n.ICE==0]
+          PS <- 
+            glm(A.k ~ .,
+                data = A.data,
+                family = "binomial")
+          weights.k <- 
+            ifelse(A.k==1, 
+                   1/PS$fitted.values,
+                   1/(1-PS$fitted.values))
+          weights <- weights[ICE.indicator==0]*weights.k
+          ICE.indicator <- A.k
+          
+        }
+        n.ICE <- rowSums(as.matrix(IPW.data[,2:t]))
+        IPW.separate.ICE.free.Y0[i] <- 
+          sum(IPW.data$Y[n.ICE==0]*
+                weights[ICE.indicator==0])/
+          sum(weights[ICE.indicator==0])
+        
+      }
+      
+      # MI single model for both groups ####
+      missing.data <- data
+      
+      # Monotone missingness
+      # Delete observations after first ICE
+      k <- 1
+      for (k in 1:(t-1)) {
+        n.ICE <- rowSums(as.matrix(data[,2:(k+1)]))
+        missing.data[,(t+k+2)] <- 
+          ifelse(n.ICE==0, missing.data[,(t+k+2)], NA)  
+      }
+      # \bar{A}_k no longer needed
+      missing.data <- missing.data[,-c(2:t)]
+      # Impute sequentially following monotone missingness
+      predictor.matrix <-
+        1*lower.tri(make.predictorMatrix(missing.data))
+      MI.data <- 
+        mice(missing.data,
+             m=10,
+             method="norm",
+             printFlag = F,
+             visitSequence = "monotone",
+             maxit = 1,
+             predictorMatrix = predictor.matrix)
+      imputed.data <- 
+        complete(MI.data, action = "long")
+      
+      MI.single.Y1[i] <- 
+        mean(imputed.data$Y[imputed.data$A0==1])
+      MI.single.Y0[i] <- 
+        mean(imputed.data$Y[imputed.data$A0==0])
+      
+      # MI separately by treatment group ####
+      # For treatment group
+      missing.data <- data[data$A0==1,]
+      
+      # Monotone missingness
+      # Delete observations after first ICE 
+      k <- 1
+      for (k in 1:(t-1)) {
+        n.ICE <- rowSums(as.matrix(missing.data[,2:(k+1)]))
+        missing.data[,(t+k+2)] <- 
+          ifelse(n.ICE==0, missing.data[,(t+k+2)], NA)  
+      }
+      # \bar{A}_k no longer needed
+      missing.data <- missing.data[,-c(2:t)]
+      # Impute sequentially following monotone missingness
+      predictor.matrix <-
+        1*lower.tri(make.predictorMatrix(missing.data))
+      MI.data <- 
+        mice(missing.data,
+             m=10,
+             method="norm",
+             printFlag = F,
+             visitSequence = "monotone",
+             maxit = 1,
+             predictorMatrix = predictor.matrix)
+      imputed.data <- 
+        complete(MI.data, action = "long")
+      
+      MI.separate.Y1[i] <- 
+        mean(imputed.data$Y)
+      
+      # For control group
+      missing.data <- data[data$A0==0,]
+      
+      # Monotone missingness 
+      # Delete observations after first ICE 
+      k <- 1
+      for (k in 1:(t-1)) {
+        n.ICE <- rowSums(as.matrix(missing.data[,2:(k+1)]))
+        missing.data[,(t+k+2)] <- 
+          ifelse(n.ICE==0, missing.data[,(t+k+2)], NA)  
+      }
+      # \bar{A}_k no longer needed
+      missing.data <- missing.data[,-c(2:t)]
+      # Impute sequentially following monotone missingness
+      predictor.matrix <-
+        1*lower.tri(make.predictorMatrix(missing.data))
+      MI.data <- 
+        mice(missing.data,
+             m=10,
+             method="norm",
+             printFlag = F,
+             visitSequence = "monotone",
+             maxit = 1,
+             predictorMatrix = predictor.matrix)
+      imputed.data <- 
+        complete(MI.data, action = "long")
+      
+      MI.separate.Y0[i] <- 
+        mean(imputed.data$Y)
+    }
+    
+    # Boxplots ####
+  if(probabilistic == T){
+    Y1.estimates <-
+      c(naive.Y1,
+        g.single.all.Y1,
+        g.single.ICE.free.Y1,
+        g.separate.all.Y1,
+        g.separate.ICE.free.Y1,
+        IPW.single.all.Y1,
+        IPW.single.ICE.free.Y1,
+        IPW.separate.all.Y1,
+        IPW.separate.ICE.free.Y1,
+        MI.single.Y1,
+        MI.separate.Y1)
+    Y0.estimates <-
+      c(naive.Y0,
+        g.single.all.Y0,
+        g.single.ICE.free.Y0,
+        g.separate.all.Y0,
+        g.separate.ICE.free.Y0,
+        IPW.single.all.Y0,
+        IPW.single.ICE.free.Y0,
+        IPW.separate.all.Y0,
+        IPW.separate.ICE.free.Y0,
+        MI.single.Y0,
+        MI.separate.Y0)
+    estimators.names <-
+      c("1) Naive", 
+        "2) G-formula", 
+        "3) G-formula among ICE-free",
+        "4) G-formula by treatment arm",
+        "5) G-formula by arm among ICE-free",
+        "6) IPW",
+        "7) IPW among ICE-free",
+        "8) IPW separately by treatment arm",
+        "9) IPW separately by arm among ICE-free",
+        "10) MI",
+        "11) MI separately by treatment arm")
+    estimand.names <-
+      c(TeX("$E(Y^{1,\\bar{0}})$"),
+        TeX("$E(Y^{0,\\bar{0}})$"),
+        TeX("$E(Y^{1,\\bar{0}}-Y^{0,\\bar{0}})$"))
+    
+    # Data frame for visualization
+    results <-
+      data.frame(
+        Estimates = 
+          c(Y1.estimates,
+            Y0.estimates,
+            Y1.estimates-
+              Y0.estimates),
+        Estimators = 
+          as.factor(rep(sort(
+            rep(1:length(estimators.names),n.sim)),3)),
+        Estimands = 
+          as.factor(sort(c(
+            rep(1:length(estimand.names),
+                (n.sim*length(estimators.names)))))))
+    
+    levels(results$Estimators) <-
+      estimators.names
+    
+    levels(results$Estimands) <-
+      c("Y1","Y0","Y1-Y0")
+    
+    
+    summary.plot <- 
+      ggplot(results, 
+             aes(x=Estimands, 
+                 y=Estimates,
+                 color=Estimators)) + 
+      geom_boxplot(outlier.shape=NA) +
+      ggtitle(plot.title) +
+      scale_x_discrete(
+        limits=c("Y1","Y0","Y1-Y0"),
+        labels=eval(parse_exprs(
+          as.character(estimand.names)))) +
+      geom_segment(x = 0.5, xend = 1.5, 
+                   y = c(true.Y1), yend = c(true.Y1),
+                   colour = "black") +
+      geom_segment(x = 1.5, xend = 2.5, 
+                   y = c(true.Y0), yend = c(true.Y0),
+                   colour = "black") + 
+      geom_segment(x = 2.5, xend = 3.5, 
+                   y = c(true.Y1-true.Y0), yend = c(true.Y1-true.Y0),
+                   colour = "black") + 
+      annotation_custom(grob = 
+                          grobTree(textGrob(
+                            paste("Patients ICE free at the end of follow-up:",
+                                  round(mean(prob.ICE)*100, 
+                                        digits = 0), "%"),
+                            gp = gpar(fontsize = 8))),
+                        xmin = 4.8, xmax = 4.8, 
+                        ymin = min(c(naive.Y1,naive.Y0)), 
+                        ymax = min(c(naive.Y1,naive.Y0))) + 
+      coord_cartesian(
+        xlim = c(1, 3), 
+        ylim = c(min(c(naive.Y1,
+                       naive.Y0)),
+                 max(
+                   results$Estimates[
+                     -which(results$Estimators==
+                              "6) IPW" |
+                              results$Estimators==
+                              "7) IPW among ICE-free" |
+                              results$Estimators==
+                              "8) IPW separately by treatment arm" |
+                              results$Estimators==
+                              "9) IPW separately by arm among ICE-free")])))
+    grid.newpage()
+    final.plot <- 
+      ggplot_gtable(ggplot_build(summary.plot))
+    final.plot$layout$clip[final.plot$layout$name=="panel"] <- "off"
+    grid.draw(final.plot)
+    
+  }else{
+    Y1.estimates <-
+      c(naive.Y1,
+        g.single.all.Y1,
+        g.single.ICE.free.Y1,
+        g.separate.all.Y1,
+        g.separate.ICE.free.Y1,
+        MI.single.Y1,
+        MI.separate.Y1)
+    Y0.estimates <-
+      c(naive.Y0,
+        g.single.all.Y0,
+        g.single.ICE.free.Y0,
+        g.separate.all.Y0,
+        g.separate.ICE.free.Y0,
+        MI.single.Y0,
+        MI.separate.Y0)
+    estimators.names <-
+      c("1) Naive", 
+        "2) G-formula", 
+        "3) G-formula among ICE-free",
+        "4) G-formula by treatment arm",
+        "5) G-formula by arm among ICE-free",
+        "6) MI",
+        "7) MI separately by treatment arm")
+    estimand.names <-
+      c(TeX("$E(Y^{1,\\bar{0}})$"),
+        TeX("$E(Y^{0,\\bar{0}})$"),
+        TeX("$E(Y^{1,\\bar{0}}-Y^{0,\\bar{0}})$"))
+    
+    # Data frame for visualization
+    results <-
+      data.frame(
+        Estimates = 
+          c(Y1.estimates,
+            Y0.estimates,
+            Y1.estimates-
+              Y0.estimates),
+        Estimators = 
+          as.factor(rep(sort(
+            rep(1:length(estimators.names),n.sim)),3)),
+        Estimands = 
+          as.factor(sort(c(
+            rep(1:length(estimand.names),
+                (n.sim*length(estimators.names)))))))
+    
+    levels(results$Estimators) <-
+      estimators.names
+    
+    levels(results$Estimands) <-
+      c("Y1","Y0","Y1-Y0")
+    
+    summary.plot <- 
+      ggplot(results, 
+             aes(x=Estimands, 
+                 y=Estimates,
+                 color=Estimators)) + 
+      geom_boxplot(outlier.shape=NA) +
+      ggtitle(plot.title) +
+      scale_x_discrete(
+        limits=c("Y1","Y0","Y1-Y0"),
+        labels=eval(parse_exprs(
+          as.character(estimand.names)))) +
+      geom_segment(x = 0.5, xend = 1.5, 
+                   y = c(true.Y1), yend = c(true.Y1),
+                   colour = "black") +
+      geom_segment(x = 1.5, xend = 2.5, 
+                   y = c(true.Y0), yend = c(true.Y0),
+                   colour = "black") + 
+      geom_segment(x = 2.5, xend = 3.5, 
+                   y = c(true.Y1-true.Y0), yend = c(true.Y1-true.Y0),
+                   colour = "black") + 
+      annotation_custom(grob = 
+                          grobTree(textGrob(
+                            paste("Patients ICE free at the end of follow-up:",
+                                  round(mean(prob.ICE)*100, 
+                                        digits = 0), "%"),
+                            gp = gpar(fontsize = 8))),
+                        xmin = 4.8, xmax = 4.8, 
+                        ymin = min(c(naive.Y1,naive.Y0)), 
+                        ymax = min(c(naive.Y1,naive.Y0)))
+    grid.newpage()
+    final.plot <- 
+      ggplot_gtable(ggplot_build(summary.plot))
+    final.plot$layout$clip[final.plot$layout$name=="panel"] <- "off"
+    grid.draw(final.plot)
+                      
+  }
+  
+  output <- 
+    list(plot = summary.plot,
+         summary = c(mean(prob.ICE),true.Y1,true.Y0))
+  
+  return(output)
+  }
+
+```
+
+## Different settings
+
+```{r Probabilistic ICE, warning=FALSE}
+
+probabilistic.ICE <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 0,
+                        L.squared.on.L.A.0 = 0,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 0,
+                        L.squared.on.A.0 = 0,
+                        L.sd = 1,
+                        probabilistic = T,
+                        A.intercept = -3,
+                        L.on.A = 0.2,
+                        A.on.Ak = 0.4,
+                        threshold = NA,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 0,
+                        L.squared.on.Y.0 = 0,
+                        Y.sd = 1,
+                        plot.title = 
+                          "Probabilistic Intercurrent Event")
+
+
+
+```
+
+
+```{r Deterministic ICE, warning=FALSE}
+
+deterministic.ICE <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 0,
+                        L.squared.on.L.A.0 = 0,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 0,
+                        L.squared.on.A.0 = 0,
+                        L.sd = 1,
+                        probabilistic = F,
+                        A.intercept = 0,
+                        L.on.A = 0,
+                        A.on.Ak = 0,
+                        threshold = 1.5,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 0,
+                        L.squared.on.Y.0 = 0,
+                        Y.sd = 1,
+                        plot.title = 
+                          "Deterministic Intercurrent Event")
+
+```
+
+
+```{r Outcome model misspecification, warning=FALSE}
+
+outcome.misspecified <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 0,
+                        L.squared.on.L.A.0 = 0,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 0,
+                        L.squared.on.A.0 = 0,
+                        L.sd = 1,
+                        probabilistic = T,
+                        A.intercept = -3,
+                        L.on.A = 0.2,
+                        A.on.Ak = 0.4,
+                        threshold = NA,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 2,
+                        L.squared.on.Y.0 = -0.5,
+                        Y.sd = 1,
+                        plot.title = 
+                          "Outcome Model Misspecification")
+
+```
+
+```{r ICE model misspecification, warning=FALSE}
+
+ICE.misspecified <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 0,
+                        L.squared.on.L.A.0 = 0,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 2,
+                        L.squared.on.A.0 = -0.5,
+                        L.sd = 1,
+                        probabilistic = T,
+                        A.intercept = -3,
+                        L.on.A = 0.2,
+                        A.on.Ak = 0.4,
+                        threshold = NA,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 0,
+                        L.squared.on.Y.0 = 0,
+                        Y.sd = 1,
+                        plot.title = 
+                          "Intercurrent Event Model Misspecification")
+
+```
+
+```{r L-model misspecification, warning=FALSE}
+
+L.misspecified <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 2,
+                        L.squared.on.L.A.0 = -0.5,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 0,
+                        L.squared.on.A.0 = 0,
+                        L.sd = 1,
+                        probabilistic = T,
+                        A.intercept = -3,
+                        L.on.A = 0.2,
+                        A.on.Ak = 0.4,
+                        threshold = NA,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 0,
+                        L.squared.on.Y.0 = 0,
+                        Y.sd = 1,
+                        plot.title = 
+                          "L-Model Misspecification")
+
+```
+
+```{r All model misspecified, warning=FALSE}
+
+all.misspecified <-
+  hypothetical_estimand(seed = 2021,
+                        n.sim = 10000,
+                        n = 500,
+                        t = 6,
+                        A0.prob = 0.5,
+                        L0.mean = 0,
+                        L0.sd = 1,
+                        L.on.Lk = 0.3,
+                        L.squared.on.L.A.1 = 2,
+                        L.squared.on.L.A.0 = -0.5,
+                        A.on.L = 0.2,
+                        L.squared.on.A.1 = 2,
+                        L.squared.on.A.0 = -0.5,
+                        L.sd = 1,
+                        probabilistic = T,
+                        A.intercept = -3,
+                        L.on.A = 0.2,
+                        A.on.Ak = 0.4,
+                        threshold = NA,
+                        L.on.Y = 0.2,
+                        A0.on.Y = 0.5,
+                        A.on.Y = 0.3,
+                        L.squared.on.Y.1 = 2,
+                        L.squared.on.Y.0 = -0.5,
+                        Y.sd = 1,
+                        plot.title = 
+                          "All Models with Misspecification")
+
+```
+
+# Plots with outliers
+
+```{r Function for boxplot with outliers, include=FALSE}
+
+boxplot.outliers <-
+  function(
+    hypothetical.estimand.output
+  ){
+    data <- 
+      hypothetical.estimand.output
+    plot <- 
+      data$plot +
+      geom_boxplot(outlier.shape = 19) +
+      geom_segment(x = 0.5, xend = 1.5, 
+                   y = c(data$summary[2]), yend = c(data$summary[2]),
+                   colour = "black") +
+      geom_segment(x = 1.5, xend = 2.5, 
+                   y = c(data$summary[3]), yend = c(data$summary[3]),
+                   colour = "black") + 
+      geom_segment(x = 2.5, xend = 3.5, 
+                   y = c(data$summary[2]-data$summary[3]), 
+                   yend = c(data$summary[2]-data$summary[3]),
+                   colour = "black")
+    plot$coordinates <-
+      coord_cartesian(xlim = c(1, 3), 
+                      ylim = c(min(data$plot$data$Estimates),
+                               max(data$plot$data$Estimates)))
+    grid.newpage()
+    final.plot <-
+      ggplot_gtable(ggplot_build(plot))
+    final.plot $layout$clip[final.plot$layout$name=="panel"] <- "off"
+    grid.draw(final.plot)
+  }
+
+```
+
+```{r Probabilistic plot}
+
+boxplot.outliers(probabilistic.ICE)
+
+```
+
+```{r Deterministic plot, warning=FALSE}
+
+boxplot.outliers(deterministic.ICE)
+
+```
+
+```{r Outcome plot, warning=FALSE}
+
+boxplot.outliers(outcome.misspecified)
+
+```
+
+```{r ICE plot, warning=FALSE}
+
+boxplot.outliers(ICE.misspecified)
+
+```
+
+```{r L plot, warning=FALSE}
+
+boxplot.outliers(L.misspecified)
+
+```
+
+```{r All plot, warning=FALSE}
+
+boxplot.outliers(all.misspecified)
+
+```
+
+
+
